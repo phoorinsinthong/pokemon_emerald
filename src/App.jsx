@@ -726,38 +726,71 @@ function App() {
 
           {roomTab === 'trade' && (
             <div className="trade-section">
-              <form onSubmit={handlePostTrade} className="trade-form">
-                <div className="trade-inputs">
-                  <input value={tradeOffering} onChange={e => setTradeOffering(e.target.value)} placeholder="มี... (เช่น Rayquaza Lv70)" className="chat-input" maxLength={30} />
-                  <span className="trade-arrow">⇄</span>
-                  <input value={tradeWanting} onChange={e => setTradeWanting(e.target.value)} placeholder="ต้องการ... (เช่น Kyogre)" className="chat-input" maxLength={30} />
+              {/* Quick Select Chips */}
+              <div className="trade-quick-picks">
+                <span className="quick-label">เลือกเร็ว:</span>
+                <div className="quick-chips">
+                  {['Rayquaza','Kyogre','Groudon','Blaziken','Gardevoir','Salamence','Metagross','Latios','Latias','Deoxys','Jirachi','Absol','Milotic','Flygon','Aggron'].map(name => (
+                    <button key={name} type="button" className="quick-chip" onClick={() => {
+                      if (!tradeOffering) setTradeOffering(name);
+                      else if (!tradeWanting) setTradeWanting(name);
+                    }}>{name}</button>
+                  ))}
                 </div>
-                <button type="submit" className="send-btn trade-post-btn" disabled={!tradeOffering || !tradeWanting}>
-                  <Plus size={16} /> โพสต์
+              </div>
+
+              <form onSubmit={handlePostTrade} className="trade-form">
+                <div className="trade-input-group">
+                  <label className="trade-label">🎁 มี</label>
+                  <input value={tradeOffering} onChange={e => setTradeOffering(e.target.value)} placeholder="เช่น Rayquaza Lv70" className="chat-input" maxLength={40} list="pokemon-list" />
+                </div>
+                <div className="trade-swap-icon" onClick={() => { const t = tradeOffering; setTradeOffering(tradeWanting); setTradeWanting(t); }}>⇅</div>
+                <div className="trade-input-group">
+                  <label className="trade-label">✨ ต้องการ</label>
+                  <input value={tradeWanting} onChange={e => setTradeWanting(e.target.value)} placeholder="เช่น Kyogre" className="chat-input" maxLength={40} list="pokemon-list" />
+                </div>
+                <datalist id="pokemon-list">
+                  {['Treecko','Grovyle','Sceptile','Torchic','Combusken','Blaziken','Mudkip','Marshtomp','Swampert','Ralts','Kirlia','Gardevoir','Aron','Lairon','Aggron','Bagon','Shelgon','Salamence','Beldum','Metang','Metagross','Absol','Milotic','Flygon','Altaria','Rayquaza','Kyogre','Groudon','Latios','Latias','Deoxys','Jirachi','Registeel','Regirock','Regice','Master Ball','Rare Candy','PP Max','TM Earthquake','TM Ice Beam'].map(p => (
+                    <option key={p} value={p} />
+                  ))}
+                </datalist>
+                <button type="submit" className="btn btn-primary trade-post-btn" disabled={!tradeOffering || !tradeWanting}>
+                  📢 โพสต์ข้อเสนอ
                 </button>
               </form>
+
               <div className="trade-list">
                 {trades.filter(t => t.status !== 'completed').length === 0 && (
-                  <p className="empty-text">ยังไม่มีข้อเสนอแลก</p>
+                  <div className="empty-trade">
+                    <span className="empty-icon">🔄</span>
+                    <p className="empty-text">ยังไม่มีข้อเสนอ — โพสต์เลย!</p>
+                  </div>
                 )}
                 {trades.filter(t => t.status !== 'completed').map((trade, i) => (
                   <div key={i} className={`trade-card ${trade.status}`}>
                     <div className="trade-header">
+                      <div className="trade-avatar">{trade.from[0].toUpperCase()}</div>
                       <span className="trade-from">{trade.from}</span>
-                      {trade.status === 'accepted' && <span className="trade-status accepted">✅ {trade.acceptedBy} รับแล้ว</span>}
-                      {trade.status === 'open' && <span className="trade-status open">เปิดรับ</span>}
+                      {trade.status === 'accepted' && <span className="trade-badge accepted">✅ {trade.acceptedBy} รับแล้ว</span>}
+                      {trade.status === 'open' && <span className="trade-badge open">🟢 เปิดรับ</span>}
                     </div>
-                    <div className="trade-content">
-                      <span className="trade-offer">🎁 {trade.offering}</span>
-                      <span className="trade-arrow-small">→</span>
-                      <span className="trade-want">✨ {trade.wanting}</span>
+                    <div className="trade-body">
+                      <div className="trade-item offer">
+                        <span className="trade-item-label">มี</span>
+                        <span className="trade-item-name">🎁 {trade.offering}</span>
+                      </div>
+                      <span className="trade-arrow-icon">➜</span>
+                      <div className="trade-item want">
+                        <span className="trade-item-label">ต้องการ</span>
+                        <span className="trade-item-name">✨ {trade.wanting}</span>
+                      </div>
                     </div>
                     <div className="trade-actions">
                       {trade.status === 'open' && trade.from !== playerName && (
-                        <button className="trade-accept-btn" onClick={() => handleAcceptTrade(trade.id)}>รับข้อเสนอ</button>
+                        <button className="btn btn-primary trade-accept-btn" onClick={() => handleAcceptTrade(trade.id)}>🤝 รับข้อเสนอ</button>
                       )}
                       {trade.from === playerName && (
-                        <button className="trade-cancel-btn" onClick={() => handleCancelTrade(trade.id)}><Trash2 size={14} /></button>
+                        <button className="trade-cancel-btn" onClick={() => handleCancelTrade(trade.id)}><Trash2 size={14} /> ลบ</button>
                       )}
                     </div>
                   </div>
