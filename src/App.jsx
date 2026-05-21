@@ -222,17 +222,17 @@ function App() {
   }, [speedMultiplier]);
 
   // ═══════════════════════════════════════════
-  // SAVE SYSTEM — Auto Save State
-  // Periodically captures full emulator state
-  // and restores it on next visit
+  // SAVE SYSTEM — Using EmulatorJS official callbacks
+  // EJS_saveSaveFiles captures SRAM when core flushes
+  // We store it and pre-populate IDBFS on next load
   // ═══════════════════════════════════════════
   const DB_NAME = 'PokeSaveDB';
-  const STORE_NAME = 'states';
-  const SAVE_KEY = 'emerald-autostate';
+  const STORE_NAME = 'saves';
+  const SRAM_KEY = 'emerald-sram';
 
   function openSaveDB() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 3);
+      const req = indexedDB.open(DB_NAME, 4);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -244,79 +244,109 @@ function App() {
     });
   }
 
-  async function putStateToDB(data) {
+  async function saveSRAM(data) {
     const db = await openSaveDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(data, SAVE_KEY);
+      tx.objectStore(STORE_NAME).put({
+        data: new Uint8Array(data),
+        timestamp: Date.now()
+      }, SRAM_KEY);
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = () => { db.close(); reject(tx.error); };
     });
   }
 
-  async function getStateFromDB() {
+  async function loadSRAM() {
     const db = await openSaveDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
-      const req = tx.objectStore(STORE_NAME).get(SAVE_KEY);
-      req.onsuccess = () => { db.close(); resolve(req.result || null); };
+      const req = tx.objectStore(STORE_NAME).get(SRAM_KEY);
+      req.onsuccess = () => {
+        db.close();
+        const result = req.result;
+        resolve(result ? new Uint8Array(result.data) : null);
+      };
       req.onerror = () => { db.close(); reject(req.error); };
     });
   }
 
-  // Extract save state from emulator
-  function extractState() {
+  // Try to extract SRAM directly from emulator FS
+  function extractSRAMDirect() {
     try {
       const emu = window.EJS_emulator;
-      if (!emu) return null;
-      // Try gameManager.getState()
-      if (emu.gameManager) {
-        if (typeof emu.gameManager.getState === 'function') {
-          const s = emu.gameManager.getState();
-          if (s && s.length > 0) return new Uint8Array(s);
-        }
-        if (typeof emu.gameManager.getSaveFile === 'function') {
-          const s = emu.gameManager.getSaveFile();
-          if (s && s.length > 0) return new Uint8Array(s);
-        }
+      if (!emu || !emu.Module || !emu.Module.FS) return null;
+      const fs = emu.Module.FS;
+      // Search common RetroArch save paths
+      const dirs = [
+        '/home/web_user/retroarch/userdata/saves/',
+        '/data/saves/',
+        '/saves/'
+      ];
+      for (const dir of dirs) {
+        try {
+          const files = fs.readdir(dir);
+          const savFile = files.find(f => f.endsWith('.srm') || f.endsWith('.sav'));
+          if (savFile) {
+            const data = fs.readFile(dir + savFile);
+            if (data && data.length > 0) {
+              console.log('[Save] Found SRAM at:', dir + savFile, data.length, 'bytes');
+              return { data: new Uint8Array(data), path: dir + savFile };
+            }
+          }
+        } catch(e) {}
       }
       return null;
     } catch(e) { return null; }
   }
 
-  // Load save state into emulator
-  function loadState(data) {
+  // Write SRAM back into emulator FS
+  function writeSRAMToEmulator(sramData) {
     try {
       const emu = window.EJS_emulator;
-      if (!emu || !data) return false;
-      if (emu.gameManager) {
-        if (typeof emu.gameManager.setState === 'function') {
-          emu.gameManager.setState(new Uint8Array(data));
-          return true;
-        }
-        if (typeof emu.gameManager.loadSaveFile === 'function') {
-          emu.gameManager.loadSaveFile(new Uint8Array(data));
-          return true;
-        }
+      if (!emu || !emu.Module || !emu.Module.FS) return false;
+      const fs = emu.Module.FS;
+      const dirs = [
+        '/home/web_user/retroarch/userdata/saves/',
+        '/data/saves/',
+        '/saves/'
+      ];
+      for (const dir of dirs) {
+        try {
+          const files = fs.readdir(dir);
+          const savFile = files.find(f => f.endsWith('.srm') || f.endsWith('.sav'));
+          if (savFile) {
+            fs.writeFile(dir + savFile, new Uint8Array(sramData));
+            console.log('[Save] Wrote SRAM to:', dir + savFile);
+            // Force the core to re-read save files
+            if (emu.gameManager && typeof emu.gameManager.loadSaveFiles === 'function') {
+              emu.gameManager.loadSaveFiles();
+              console.log('[Save] Called loadSaveFiles()');
+            }
+            return true;
+          }
+        } catch(e) {}
       }
       return false;
     } catch(e) { return false; }
   }
 
-  // Save state to DB (used by auto-save and manual triggers)
-  async function autoSave() {
-    const state = extractState();
-    if (state && state.length > 0) {
-      await putStateToDB(state);
-      console.log('[AutoSave] Saved:', state.length, 'bytes');
+  // Force extract + save to our DB
+  async function forceSave() {
+    const result = extractSRAMDirect();
+    if (result && result.data.length > 0) {
+      await saveSRAM(result.data);
       return true;
     }
     return false;
   }
 
   // Aliases for cloud/share
-  async function extractSaveFromIndexedDB() { return getStateFromDB(); }
-  async function injectSaveToIndexedDB(data) { return putStateToDB(data); }
+  async function extractSaveFromIndexedDB() {
+    const data = await loadSRAM();
+    return data;
+  }
+  async function injectSaveToIndexedDB(data) { return saveSRAM(data); }
 
   // ─── Emulator Setup ───
   useEffect(() => {
@@ -332,15 +362,22 @@ function App() {
       window.EJS_gameID = 'pokemon-emerald';
       window.EJS_defaultOptions = { 'save-state-location': 'browser' };
 
+      // Force SRAM flush every 5 seconds
+      window.EJS_fixedSaveInterval = 5000;
+
       let autoSaveInterval = null;
 
-      // Manual save state button callback
-      window.EJS_onSaveState = function(e) {
-        if (e && e.state) {
-          putStateToDB(new Uint8Array(e.state)).catch(() => {});
-        } else {
-          autoSave().catch(() => {});
+      // CRITICAL: This callback fires when EmulatorJS flushes SRAM
+      window.EJS_saveSaveFiles = function(data) {
+        if (data && data.save) {
+          saveSRAM(data.save).then(() => {
+            console.log('[Save] SRAM captured via callback:', data.save.length, 'bytes');
+          }).catch(() => {});
         }
+      };
+
+      window.EJS_onSaveState = function() {
+        forceSave().catch(() => {});
         setSaveStatus('💾 Save State บันทึกแล้ว');
         setTimeout(() => setSaveStatus(''), 2000);
       };
@@ -349,49 +386,44 @@ function App() {
         setSaveStatus('🎮 กำลังโหลด save...');
         if (roomId) updatePlayerStatus(roomId, playerName, 'playing').catch(() => {});
 
-        // Wait for emulator to fully initialize
-        await new Promise(r => setTimeout(r, 2000));
+        // Wait for emulator FS to be ready
+        await new Promise(r => setTimeout(r, 3000));
 
-        // Auto-load previous state
+        // Try to restore saved SRAM
         try {
-          const savedState = await getStateFromDB();
-          if (savedState && savedState.length > 0) {
-            const loaded = loadState(savedState);
-            if (loaded) {
+          const savedSRAM = await loadSRAM();
+          if (savedSRAM && savedSRAM.length > 0) {
+            const wrote = writeSRAMToEmulator(savedSRAM);
+            if (wrote) {
               setSaveStatus('✅ โหลด save สำเร็จ!');
             } else {
-              setSaveStatus('🎮 เกมเริ่มแล้ว (ไม่สามารถโหลด save ได้)');
+              setSaveStatus('🎮 เกมเริ่มแล้ว');
             }
           } else {
-            setSaveStatus('🎮 เกมเริ่มแล้ว');
+            setSaveStatus('🎮 เกมเริ่มแล้ว (ยังไม่มี save)');
           }
         } catch(e) {
           setSaveStatus('🎮 เกมเริ่มแล้ว');
         }
         setTimeout(() => setSaveStatus(''), 3000);
 
-        // Auto-save state every 30 seconds
+        // Also periodically extract SRAM as backup
         autoSaveInterval = setInterval(() => {
-          autoSave().then(ok => {
-            if (ok) {
-              setSaveStatus('💾 Auto-saved');
-              setTimeout(() => setSaveStatus(''), 1000);
-            }
-          }).catch(() => {});
-        }, 30000);
+          forceSave().catch(() => {});
+        }, 15000);
       };
 
-      // Save when tab becomes hidden (more reliable than beforeunload on mobile)
+      // Save when tab hidden (most reliable on mobile)
       const visibilityHandler = () => {
         if (document.visibilityState === 'hidden') {
-          autoSave().catch(() => {});
+          forceSave().catch(() => {});
         }
       };
       document.addEventListener('visibilitychange', visibilityHandler);
 
-      // Also save on beforeunload as backup
+      // Save on page close
       const beforeUnloadHandler = () => {
-        autoSave().catch(() => {});
+        forceSave().catch(() => {});
       };
       window.addEventListener('beforeunload', beforeUnloadHandler);
 
@@ -409,7 +441,7 @@ function App() {
       } catch (e) {}
 
       return () => {
-        autoSave().catch(() => {});
+        forceSave().catch(() => {});
         if (autoSaveInterval) clearInterval(autoSaveInterval);
         document.removeEventListener('visibilitychange', visibilityHandler);
         window.removeEventListener('beforeunload', beforeUnloadHandler);
