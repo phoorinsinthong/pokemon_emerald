@@ -222,17 +222,17 @@ function App() {
   }, [speedMultiplier]);
 
   // ═══════════════════════════════════════════
-  // SAVE SYSTEM
-  // Let EmulatorJS handle SRAM natively (its own IndexedDB)
-  // We only backup Save States for cloud/share features
+  // SAVE SYSTEM — Auto Save State
+  // Periodically captures full emulator state
+  // and restores it on next visit
   // ═══════════════════════════════════════════
   const DB_NAME = 'PokeSaveDB';
   const STORE_NAME = 'states';
-  const SAVE_KEY = 'emerald-state';
+  const SAVE_KEY = 'emerald-autostate';
 
   function openSaveDB() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 2);
+      const req = indexedDB.open(DB_NAME, 3);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -264,6 +264,56 @@ function App() {
     });
   }
 
+  // Extract save state from emulator
+  function extractState() {
+    try {
+      const emu = window.EJS_emulator;
+      if (!emu) return null;
+      // Try gameManager.getState()
+      if (emu.gameManager) {
+        if (typeof emu.gameManager.getState === 'function') {
+          const s = emu.gameManager.getState();
+          if (s && s.length > 0) return new Uint8Array(s);
+        }
+        if (typeof emu.gameManager.getSaveFile === 'function') {
+          const s = emu.gameManager.getSaveFile();
+          if (s && s.length > 0) return new Uint8Array(s);
+        }
+      }
+      return null;
+    } catch(e) { return null; }
+  }
+
+  // Load save state into emulator
+  function loadState(data) {
+    try {
+      const emu = window.EJS_emulator;
+      if (!emu || !data) return false;
+      if (emu.gameManager) {
+        if (typeof emu.gameManager.setState === 'function') {
+          emu.gameManager.setState(new Uint8Array(data));
+          return true;
+        }
+        if (typeof emu.gameManager.loadSaveFile === 'function') {
+          emu.gameManager.loadSaveFile(new Uint8Array(data));
+          return true;
+        }
+      }
+      return false;
+    } catch(e) { return false; }
+  }
+
+  // Save state to DB (used by auto-save and manual triggers)
+  async function autoSave() {
+    const state = extractState();
+    if (state && state.length > 0) {
+      await putStateToDB(state);
+      console.log('[AutoSave] Saved:', state.length, 'bytes');
+      return true;
+    }
+    return false;
+  }
+
   // Aliases for cloud/share
   async function extractSaveFromIndexedDB() { return getStateFromDB(); }
   async function injectSaveToIndexedDB(data) { return putStateToDB(data); }
@@ -271,7 +321,6 @@ function App() {
   // ─── Emulator Setup ───
   useEffect(() => {
     if (isPlaying) {
-      // Core EmulatorJS config — set BEFORE loader script
       window.EJS_player = '#game';
       window.EJS_core = 'gba';
       window.EJS_gameName = 'Pokemon Emerald';
@@ -280,40 +329,69 @@ function App() {
       window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
       window.EJS_gameUrl = import.meta.env.BASE_URL + 'emerald.gba';
       window.EJS_cheats = CHEATS.map(c => [c.name, c.code.replace(/\n/g, '+')]);
-
-      // CRITICAL: consistent game ID for save persistence
       window.EJS_gameID = 'pokemon-emerald';
-
-      // Tell EmulatorJS to store saves in browser IndexedDB
       window.EJS_defaultOptions = { 'save-state-location': 'browser' };
 
-      // Auto-flush SRAM to IndexedDB every 5 seconds
-      window.EJS_fixedSaveInterval = 5000;
+      let autoSaveInterval = null;
 
-      // Callback: save state created (for cloud backup)
+      // Manual save state button callback
       window.EJS_onSaveState = function(e) {
         if (e && e.state) {
           putStateToDB(new Uint8Array(e.state)).catch(() => {});
+        } else {
+          autoSave().catch(() => {});
         }
         setSaveStatus('💾 Save State บันทึกแล้ว');
         setTimeout(() => setSaveStatus(''), 2000);
       };
 
-      // Callback: game started
-      window.EJS_onGameStart = function() {
-        setSaveStatus('🎮 เกมเริ่มแล้ว — Save ในเกมทำงานอัตโนมัติ');
-        setTimeout(() => setSaveStatus(''), 3000);
+      window.EJS_onGameStart = async function() {
+        setSaveStatus('🎮 กำลังโหลด save...');
         if (roomId) updatePlayerStatus(roomId, playerName, 'playing').catch(() => {});
+
+        // Wait for emulator to fully initialize
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Auto-load previous state
+        try {
+          const savedState = await getStateFromDB();
+          if (savedState && savedState.length > 0) {
+            const loaded = loadState(savedState);
+            if (loaded) {
+              setSaveStatus('✅ โหลด save สำเร็จ!');
+            } else {
+              setSaveStatus('🎮 เกมเริ่มแล้ว (ไม่สามารถโหลด save ได้)');
+            }
+          } else {
+            setSaveStatus('🎮 เกมเริ่มแล้ว');
+          }
+        } catch(e) {
+          setSaveStatus('🎮 เกมเริ่มแล้ว');
+        }
+        setTimeout(() => setSaveStatus(''), 3000);
+
+        // Auto-save state every 30 seconds
+        autoSaveInterval = setInterval(() => {
+          autoSave().then(ok => {
+            if (ok) {
+              setSaveStatus('💾 Auto-saved');
+              setTimeout(() => setSaveStatus(''), 1000);
+            }
+          }).catch(() => {});
+        }, 30000);
       };
 
-      // Force flush on page close
+      // Save when tab becomes hidden (more reliable than beforeunload on mobile)
+      const visibilityHandler = () => {
+        if (document.visibilityState === 'hidden') {
+          autoSave().catch(() => {});
+        }
+      };
+      document.addEventListener('visibilitychange', visibilityHandler);
+
+      // Also save on beforeunload as backup
       const beforeUnloadHandler = () => {
-        try {
-          const emu = window.EJS_emulator;
-          if (emu && emu.Module && emu.Module.FS && emu.Module.FS.syncfs) {
-            emu.Module.FS.syncfs(false, () => {});
-          }
-        } catch(e) {}
+        autoSave().catch(() => {});
       };
       window.addEventListener('beforeunload', beforeUnloadHandler);
 
@@ -324,7 +402,6 @@ function App() {
       script.id = 'ejs-loader-script';
       document.body.appendChild(script);
 
-      // Lock landscape
       try {
         if (window.screen?.orientation?.lock) {
           window.screen.orientation.lock('landscape').catch(() => {});
@@ -332,13 +409,9 @@ function App() {
       } catch (e) {}
 
       return () => {
-        // Force flush saves before cleanup
-        try {
-          const emu = window.EJS_emulator;
-          if (emu && emu.Module && emu.Module.FS && emu.Module.FS.syncfs) {
-            emu.Module.FS.syncfs(false, () => {});
-          }
-        } catch(e) {}
+        autoSave().catch(() => {});
+        if (autoSaveInterval) clearInterval(autoSaveInterval);
+        document.removeEventListener('visibilitychange', visibilityHandler);
         window.removeEventListener('beforeunload', beforeUnloadHandler);
         const s = document.getElementById('ejs-loader-script');
         if (s) s.remove();
