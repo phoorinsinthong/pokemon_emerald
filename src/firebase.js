@@ -64,7 +64,7 @@ export async function joinRoom(roomId, playerName) {
   if (!snapshot.exists()) throw new Error("ไม่พบห้องนี้");
   const data = snapshot.val();
   const playerCount = data.players ? Object.keys(data.players).length : 0;
-  if (playerCount >= 4) throw new Error("ห้องเต็มแล้ว (สูงสุด 4 คน)");
+  if (playerCount >= 8) throw new Error("ห้องเต็มแล้ว (สูงสุด 8 คน)");
   await update(dbRef(db, `rooms/${roomId}/players/${playerName}`), {
     joinedAt: Date.now(),
     online: true,

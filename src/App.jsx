@@ -680,7 +680,7 @@ function App() {
 
           {/* Player List */}
           <div className="player-list">
-            <span className="player-count">{players.length}/4 ผู้เล่น</span>
+            <span className="player-count">{players.length}/8 ผู้เล่น</span>
             {players.map(([name, info], i) => (
               <div key={i} className="player-card">
                 <div className="player-avatar">{name[0].toUpperCase()}</div>
@@ -850,7 +850,7 @@ function App() {
         {!roomMode ? (
           <div className="mode-buttons">
             <button className="btn btn-primary" onClick={startSoloGame}><Play size={18} /> เล่นคนเดียว</button>
-            <button className="btn btn-secondary" onClick={() => setRoomMode('create')}><Plus size={18} /> สร้างห้อง (2-4 คน)</button>
+            <button className="btn btn-secondary" onClick={() => setRoomMode('create')}><Plus size={18} /> สร้างห้อง (2-8 คน)</button>
             <button className="btn btn-secondary" onClick={() => setRoomMode('join')}><LogIn size={18} /> เข้าห้อง</button>
           </div>
         ) : roomMode === 'create' ? (
